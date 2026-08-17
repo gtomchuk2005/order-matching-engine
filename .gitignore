@@ -1,0 +1,22 @@
+# Go build artifacts
+gateway/bin/
+*.exe
+*.test
+*.out
+
+# C++ build artifacts (out-of-source CMake builds live here)
+engine/build/
+
+# OS noise
+.DS_Store
+
+# Editor / IDE state — personal, not project config
+.vscode/
+.idea/
+
+# Local-only Compose overrides. Compose auto-loads this file when present,
+# layering it on top of compose.yaml — the real mechanism for structural
+# local changes (.env.local is NOT auto-loaded by Compose and does nothing).
+# .env is gitignored too — generated from .env.example.
+compose.override.yaml
+.env
