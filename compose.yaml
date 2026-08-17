@@ -1,0 +1,82 @@
+# Local infrastructure for the order matching engine.
+
+services:
+  kafka:
+    image: apache/kafka:${KAFKA_VERSION}
+    container_name: matching-engine-kafka
+    ports:
+      - "${KAFKA_HOST_PORT}:${KAFKA_HOST_PORT}"
+    environment:
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_NODE_ID: 1
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      # CONTROLLER must bind a routable host, not 0.0.0.0 (can't appear in
+      # ADVERTISED_LISTENERS; errors misleadingly blame advertised.listeners).
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://kafka:9093,HOST://0.0.0.0:${KAFKA_HOST_PORT}
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,HOST://localhost:${KAFKA_HOST_PORT}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # Fixed, not image-generated: consumed only when storage is first
+      # formatted, so a changing id would conflict with the volume's metadata.
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID}
+
+      # Must be set explicitly: without it, Kafka silently writes to
+      # /tmp/kafka-logs instead, so the volume below does nothing and data is lost.
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      # Without this, a typo'd topic name silently creates a 1-partition topic
+      # instead of failing. Topics come only from scripts/create-topics.sh.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: false
+    # Mount point pre-exists root-owned in the image but Kafka runs as uid
+    # 1000, causing AccessDeniedException without this. Local dev only.
+    user: root
+    volumes:
+      - kafka-data:/tmp/kraft-combined-logs
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  redis:
+    image: redis:${REDIS_VERSION}
+    container_name: matching-engine-redis
+    ports:
+      - "${REDIS_HOST_PORT}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  init-topics:
+    image: apache/kafka:${KAFKA_VERSION}
+    container_name: matching-engine-init-topics
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./scripts/create-topics.sh:/create-topics.sh:ro
+    environment:
+      KAFKA_BROKER: kafka:9092
+      ORDERS_TOPIC: ${ORDERS_TOPIC}
+      DELTAS_TOPIC: ${DELTAS_TOPIC}
+      TOPIC_PARTITIONS: ${TOPIC_PARTITIONS}
+      TOPIC_REPLICATION: ${TOPIC_REPLICATION}
+    entrypoint: ["/bin/bash", "/create-topics.sh"]
+
+volumes:
+  kafka-data:
