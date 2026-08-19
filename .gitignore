@@ -4,8 +4,8 @@ gateway/bin/
 *.test
 *.out
 
-# C++ build artifacts (out-of-source CMake builds live here)
-engine/build/
+# C++ build artifacts (out-of-source CMake build lives here)
+build/
 
 # OS noise
 .DS_Store
