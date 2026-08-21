@@ -104,7 +104,7 @@ TEST_CASE("time priority within a level is respected", "[matching]") {
     const auto* orders = book.orders_at(Side::Sell, 10000);
     REQUIRE(orders != nullptr);
     REQUIRE(orders->size() == 1);
-    REQUIRE((*orders)[0].id == "second");
+    REQUIRE(orders->front().id == "second");
 }
 
 TEST_CASE("sell side mirrors buy side matching", "[matching]") {
