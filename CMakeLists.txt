@@ -20,7 +20,7 @@ FetchContent_MakeAvailable(Catch2)
 add_library(engine engine/src/OrderBook.cpp)
 target_include_directories(engine PUBLIC engine/src)
 
-add_executable(engine_tests engine/test/OrderBookTest.cpp)
+add_executable(engine_tests engine/test/OrderBookTest.cpp engine/test/MatchingTest.cpp)
 target_link_libraries(engine_tests PRIVATE engine Catch2::Catch2WithMain)
 
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)

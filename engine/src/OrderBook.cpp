@@ -1,5 +1,7 @@
 #include "OrderBook.h"
 
+#include <algorithm>
+
 void OrderBook::add(Side side, Price price, const Order& order) {
     PriceLevel& level = (side == Side::Buy) ? bids_[price] : asks_[price];
     level.orders.push_back(order);
@@ -45,4 +47,62 @@ bool OrderBook::empty(Side side) const {
 const std::deque<Order>* OrderBook::orders_at(Side side, Price price) const {
     const PriceLevel* level = level_at(side, price);
     return level ? &level->orders : nullptr;
+}
+
+PriceLevel* OrderBook::crossing_level(Side side, Price limit, Price& out_price) {
+    if (side == Side::Buy) {
+        if (asks_.empty()) return nullptr;
+        auto it = asks_.begin();
+        if (it->first > limit) return nullptr;
+        out_price = it->first;
+        return &it->second;
+    }
+    if (bids_.empty()) return nullptr;
+    auto it = bids_.begin();
+    if (it->first < limit) return nullptr;
+    out_price = it->first;
+    return &it->second;
+}
+
+void OrderBook::erase_level(Side side, Price price) {
+    if (side == Side::Buy) {
+        bids_.erase(price);
+    } else {
+        asks_.erase(price);
+    }
+}
+
+std::vector<Trade> OrderBook::match(Side side, Price price, const Order& order) {
+    std::vector<Trade> trades;
+    Qty remaining = order.qty;
+
+    while (remaining > 0) {
+        Price best_price = 0;
+        PriceLevel* level = crossing_level(side, price, best_price);
+        if (level == nullptr) break;
+
+        Order& maker = level->orders.front();
+        Qty fill = std::min(remaining, maker.qty);
+
+        // Trade executes at the resting (maker) order's price, not the incoming price.
+        trades.push_back(Trade{maker.id, order.id, best_price, fill});
+
+        remaining -= fill;
+        maker.qty -= fill;
+        level->total_qty -= fill;
+
+        if (maker.qty == 0) {
+            level->orders.pop_front();
+        }
+        // level may dangle after erase, so erase last and don't touch it again.
+        if (level->orders.empty()) {
+            erase_level(side == Side::Buy ? Side::Sell : Side::Buy, best_price);
+        }
+    }
+
+    if (remaining > 0) {
+        add(side, price, Order{order.id, remaining});
+    }
+
+    return trades;
 }

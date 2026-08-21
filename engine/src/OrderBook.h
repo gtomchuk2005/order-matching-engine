@@ -5,15 +5,19 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <vector>
 
 #include "Order.h"
 #include "PriceLevel.h"
+#include "Trade.h"
 #include "Types.h"
 
 // std::greater on bids and std::less on asks put the best price at begin() on both sides
 class OrderBook {
 public:
     void add(Side side, Price price, const Order& order);
+
+    std::vector<Trade> match(Side side, Price price, const Order& order);
 
     std::optional<Price> best_bid() const;
     std::optional<Price> best_ask() const;
@@ -26,6 +30,8 @@ public:
 
 private:
     const PriceLevel* level_at(Side side, Price price) const;
+    PriceLevel* crossing_level(Side side, Price limit, Price& out_price);
+    void erase_level(Side side, Price price);
 
     std::map<Price, PriceLevel, std::greater<Price>> bids_;
     std::map<Price, PriceLevel, std::less<Price>>    asks_;
