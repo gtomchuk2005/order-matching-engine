@@ -2,6 +2,7 @@
 
 #include "Order.h"
 #include "OrderBook.h"
+#include "Trade.h"
 #include "Types.h"
 
 TEST_CASE("empty book has no levels or resting orders", "[order_book]") {
@@ -78,9 +79,10 @@ TEST_CASE("orders within a price level keep FIFO time priority", "[order_book]")
     const auto* orders = book.orders_at(Side::Buy, 10000);
     REQUIRE(orders != nullptr);
     REQUIRE(orders->size() == 3);
-    REQUIRE((*orders)[0].id == "a");
-    REQUIRE((*orders)[1].id == "b");
-    REQUIRE((*orders)[2].id == "c");
+    auto it = orders->begin();
+    REQUIRE((it++)->id == "a");
+    REQUIRE((it++)->id == "b");
+    REQUIRE((it++)->id == "c");
 }
 
 TEST_CASE("bid and ask sides are independent", "[order_book]") {
@@ -103,4 +105,121 @@ TEST_CASE("crossing prices are allowed on add", "[order_book]") {
 
     REQUIRE(book.best_bid() == 10100);
     REQUIRE(book.best_ask() == 10000);
+}
+
+TEST_CASE("cancel removes a resting order from the book", "[cancel]") {
+    OrderBook book;
+    book.add(Side::Buy, 10000, Order{"a", 20});
+
+    REQUIRE(book.cancel("a"));
+    REQUIRE(book.level_count(Side::Buy) == 0);
+    REQUIRE(book.qty_at(Side::Buy, 10000) == 0);
+    REQUIRE(book.orders_at(Side::Buy, 10000) == nullptr);
+}
+
+TEST_CASE("cancel from a multi-order level keeps the rest in FIFO order", "[cancel]") {
+    OrderBook book;
+    book.add(Side::Buy, 10000, Order{"a", 10});
+    book.add(Side::Buy, 10000, Order{"b", 10});
+    book.add(Side::Buy, 10000, Order{"c", 10});
+
+    REQUIRE(book.cancel("b"));
+
+    const auto* orders = book.orders_at(Side::Buy, 10000);
+    REQUIRE(orders != nullptr);
+    REQUIRE(orders->size() == 2);
+    auto it = orders->begin();
+    REQUIRE((it++)->id == "a");
+    REQUIRE((it++)->id == "c");
+    REQUIRE(book.qty_at(Side::Buy, 10000) == 20);
+}
+
+TEST_CASE("cancelling the last order at a level erases the level", "[cancel]") {
+    OrderBook book;
+    book.add(Side::Sell, 10000, Order{"a", 20});
+
+    REQUIRE(book.cancel("a"));
+    REQUIRE(book.level_count(Side::Sell) == 0);
+    REQUIRE(book.best_ask() == std::nullopt);
+}
+
+TEST_CASE("cancel a partially-filled resting order removes only the remainder", "[cancel]") {
+    OrderBook book;
+    book.add(Side::Sell, 10000, Order{"maker", 20});
+
+    auto trades = book.match(Side::Buy, 10000, Order{"taker", 5});
+    REQUIRE(trades.size() == 1);
+    REQUIRE(book.qty_at(Side::Sell, 10000) == 15);
+
+    REQUIRE(book.cancel("maker"));
+    REQUIRE(book.level_count(Side::Sell) == 0);
+}
+
+TEST_CASE("cancel of an unknown id returns false", "[cancel]") {
+    OrderBook book;
+
+    REQUIRE_FALSE(book.cancel("nonexistent"));
+}
+
+TEST_CASE("cancelling twice returns false the second time", "[cancel]") {
+    OrderBook book;
+    book.add(Side::Buy, 10000, Order{"a", 10});
+
+    REQUIRE(book.cancel("a"));
+    REQUIRE_FALSE(book.cancel("a"));
+}
+
+TEST_CASE("cancel on an order already fully filled by match returns false", "[cancel]") {
+    OrderBook book;
+    book.add(Side::Sell, 10000, Order{"maker", 20});
+
+    auto trades = book.match(Side::Buy, 10000, Order{"taker", 20});
+    REQUIRE(trades.size() == 1);
+    REQUIRE(book.level_count(Side::Sell) == 0);
+
+    REQUIRE_FALSE(book.cancel("maker"));
+}
+
+TEST_CASE("amend moves an order to the back of the new level's queue", "[cancel]") {
+    OrderBook book;
+    book.add(Side::Buy, 10000, Order{"a", 10});
+    book.add(Side::Buy, 10000, Order{"b", 10});
+
+    auto result = book.amend("a", 10000, 30);
+    REQUIRE(result.has_value());
+    REQUIRE(result->empty());
+
+    const auto* orders = book.orders_at(Side::Buy, 10000);
+    REQUIRE(orders != nullptr);
+    REQUIRE(orders->size() == 2);
+    auto it = orders->begin();
+    REQUIRE((it++)->id == "b");
+    REQUIRE((it++)->id == "a");
+    REQUIRE(book.qty_at(Side::Buy, 10000) == 40);
+}
+
+TEST_CASE("amend to a crossing price matches against the resting order", "[cancel]") {
+    OrderBook book;
+    book.add(Side::Sell, 10000, Order{"maker", 20});
+    book.add(Side::Buy, 9900, Order{"resting", 10});
+
+    auto result = book.amend("resting", 10100, 10);
+    REQUIRE(result.has_value());
+    REQUIRE(result->size() == 1);
+    REQUIRE((*result)[0].maker_id == "maker");
+    REQUIRE((*result)[0].taker_id == "resting");
+    REQUIRE((*result)[0].price == 10000);
+    REQUIRE((*result)[0].qty == 10);
+
+    REQUIRE(book.qty_at(Side::Buy, 9900) == 0);
+    REQUIRE(book.qty_at(Side::Buy, 10100) == 0);
+    REQUIRE(book.qty_at(Side::Sell, 10000) == 10);
+    REQUIRE(book.best_bid() == std::nullopt);
+    REQUIRE(book.best_ask() == 10000);
+}
+
+TEST_CASE("amend of an unknown id returns nullopt", "[cancel]") {
+    OrderBook book;
+
+    REQUIRE(book.amend("nonexistent", 10000, 10) == std::nullopt);
 }
