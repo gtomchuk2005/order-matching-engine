@@ -6,6 +6,8 @@ void OrderBook::add(Side side, Price price, const Order& order) {
     PriceLevel& level = (side == Side::Buy) ? bids_[price] : asks_[price];
     level.orders.push_back(order);
     level.total_qty += order.qty;
+    auto it = std::prev(level.orders.end());
+    index_[order.id] = Location{side, price, it};
 }
 
 std::optional<Price> OrderBook::best_bid() const {
@@ -44,7 +46,7 @@ bool OrderBook::empty(Side side) const {
     return (side == Side::Buy) ? bids_.empty() : asks_.empty();
 }
 
-const std::deque<Order>* OrderBook::orders_at(Side side, Price price) const {
+const std::list<Order>* OrderBook::orders_at(Side side, Price price) const {
     const PriceLevel* level = level_at(side, price);
     return level ? &level->orders : nullptr;
 }
@@ -92,6 +94,7 @@ std::vector<Trade> OrderBook::match(Side side, Price price, const Order& order) 
         level->total_qty -= fill;
 
         if (maker.qty == 0) {
+            index_.erase(maker.id);
             level->orders.pop_front();
         }
         // level may dangle after erase, so erase last and don't touch it again.
@@ -105,4 +108,33 @@ std::vector<Trade> OrderBook::match(Side side, Price price, const Order& order) 
     }
 
     return trades;
+}
+
+bool OrderBook::cancel(OrderId id) {
+    auto found = index_.find(id);
+    if (found == index_.end()) {
+        return false;
+    }
+
+    Location loc = found->second;
+    PriceLevel* level = (loc.side == Side::Buy) ? &bids_.at(loc.price) : &asks_.at(loc.price);
+
+    level->total_qty -= loc.it->qty;
+    level->orders.erase(loc.it);
+    if (level->orders.empty()) {
+        erase_level(loc.side, loc.price);
+    }
+    index_.erase(found);
+    return true;
+}
+
+std::optional<std::vector<Trade>> OrderBook::amend(OrderId id, Price new_price, Qty new_qty) {
+    auto found = index_.find(id);
+    if (found == index_.end()) {
+        return std::nullopt;
+    }
+    Side side = found->second.side;
+
+    cancel(id);
+    return match(side, new_price, Order{id, new_qty});
 }
