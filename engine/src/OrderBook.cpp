@@ -51,6 +51,28 @@ const std::list<Order>* OrderBook::orders_at(Side side, Price price) const {
     return level ? &level->orders : nullptr;
 }
 
+std::optional<std::pair<Side, Price>> OrderBook::location_of(OrderId id) const {
+    auto found = index_.find(id);
+    if (found == index_.end()) {
+        return std::nullopt;
+    }
+    return std::make_pair(found->second.side, found->second.price);
+}
+
+std::vector<std::pair<Price, Qty>> OrderBook::levels(Side side) const {
+    std::vector<std::pair<Price, Qty>> result;
+    if (side == Side::Buy) {
+        for (const auto& [price, level] : bids_) {
+            result.emplace_back(price, level.total_qty);
+        }
+    } else {
+        for (const auto& [price, level] : asks_) {
+            result.emplace_back(price, level.total_qty);
+        }
+    }
+    return result;
+}
+
 PriceLevel* OrderBook::crossing_level(Side side, Price limit, Price& out_price) {
     if (side == Side::Buy) {
         if (asks_.empty()) return nullptr;

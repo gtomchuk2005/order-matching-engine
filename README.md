@@ -53,23 +53,44 @@ Orders at the same price fill in arrival order (**price-time priority**).
 
 ## Message formats
 
-Three JSON message types flow between the Go gateway, the C++ engine, and
-Redis: `Order` (gateway → `orders` topic), `Delta` (engine → `deltas`
-topic), and `Snapshot` (engine → Redis, key `book:{symbol}`).
+JSON message types flow between the Go gateway, the C++ engine, and
+Redis: `Order`, `Cancel`, and `Amend` (gateway → `orders` topic), `Trade`
+and `Delta` (engine → `deltas` topic), and `Snapshot` (engine → Redis,
+key `book:{symbol}`). The engine itself reads newline-delimited JSON on
+stdin, one message per line, and writes newline-delimited `Trade` and
+`Delta` events to stdout.
 
 Prices are integer ticks — 1 tick = $0.01, so $100.50 is 10050.
 
 ```json
 // Order
-{"symbol": "AAPL", "side": "buy", "price": 10050, "qty": 10,
- "client_order_id": "a1", "order_id": "ord_9f2c1b",
+{"type": "new", "symbol": "AAPL", "order_id": "a1", "side": "buy",
+ "price": 10050, "qty": 10, "ingress_ts_ns": 1755273600123456789}
+```
+
+```json
+// Cancel
+{"type": "cancel", "symbol": "AAPL", "order_id": "a1",
+ "ingress_ts_ns": 1755273600123456789}
+```
+
+```json
+// Amend
+{"type": "amend", "symbol": "AAPL", "order_id": "a1", "price": 10100,
+ "qty": 5, "ingress_ts_ns": 1755273600123456789}
+```
+
+```json
+// Trade
+{"type": "trade", "symbol": "AAPL", "seq": 1, "maker_id": "a1",
+ "taker_id": "b7", "price": 10050, "qty": 4,
  "ingress_ts_ns": 1755273600123456789}
 ```
 
 ```json
 // Delta
-{"symbol": "AAPL", "seq": 42, "side": "bid", "price": 10050, "qty": 6,
- "ingress_ts_ns": 1755273600123456789}
+{"type": "delta", "symbol": "AAPL", "seq": 2, "side": "bid",
+ "price": 10050, "qty": 6, "ingress_ts_ns": 1755273600123456789}
 ```
 
 ```json
@@ -78,6 +99,11 @@ Prices are integer ticks — 1 tick = $0.01, so $100.50 is 10050.
  "bids": [[10050, 6], [10049, 25]],
  "asks": [[10052, 8], [10053, 40]]}
 ```
+
+A `qty: 0` on a `Delta` means the level is now empty. `seq` is per-symbol
+and monotonic across every `Trade` and `Delta` emitted for that symbol.
+The engine copies `ingress_ts_ns` from the message that caused the event
+— it never generates a timestamp of its own.
 
 ## Getting started
 

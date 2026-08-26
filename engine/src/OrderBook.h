@@ -32,6 +32,9 @@ public:
 
     const std::list<Order>* orders_at(Side side, Price price) const;
 
+    std::optional<std::pair<Side, Price>> location_of(OrderId id) const;
+    std::vector<std::pair<Price, Qty>> levels(Side side) const;
+
 private:
     struct Location {
         Side side;
