@@ -17,10 +17,21 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Catch2)
 
-add_library(engine engine/src/OrderBook.cpp)
-target_include_directories(engine PUBLIC engine/src)
+FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG v3.11.3
+)
+FetchContent_MakeAvailable(nlohmann_json)
 
-add_executable(engine_tests engine/test/OrderBookTest.cpp engine/test/MatchingTest.cpp)
+add_library(engine engine/src/OrderBook.cpp engine/src/Engine.cpp engine/src/Json.cpp)
+target_include_directories(engine PUBLIC engine/src)
+target_link_libraries(engine PRIVATE nlohmann_json::nlohmann_json)
+
+add_executable(engine_main engine/src/main.cpp)
+target_link_libraries(engine_main PRIVATE engine)
+
+add_executable(engine_tests engine/test/OrderBookTest.cpp engine/test/MatchingTest.cpp engine/test/EngineTest.cpp)
 target_link_libraries(engine_tests PRIVATE engine Catch2::Catch2WithMain)
 
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
