@@ -172,3 +172,14 @@ Redis directly via the published host port: `redis-cli -p 6379 ping`.
 `.env` is yours to edit directly for config values. For structural
 changes to `compose.yaml` itself, use `compose.override.yaml` — Compose
 auto-loads it when present, and it's gitignored.
+
+## Benchmarks
+
+Order book benchmarks are opt-in via `-DBUILD_BENCH=ON` and are not built
+by default:
+
+```bash
+cmake -S . -B build -DBUILD_BENCH=ON
+cmake --build build --target order_book_bench
+./build/order_book_bench
+```
