@@ -57,6 +57,6 @@ if(BUILD_BENCH)
     )
     FetchContent_MakeAvailable(benchmark)
 
-    add_executable(order_book_bench engine/bench/order_book_bench.cpp)
+    add_executable(order_book_bench engine/bench/OrderBookBench.cpp)
     target_link_libraries(order_book_bench PRIVATE engine benchmark::benchmark)
 endif()
