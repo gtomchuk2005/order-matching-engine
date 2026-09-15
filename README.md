@@ -57,8 +57,9 @@ JSON message types flow between the Go gateway, the C++ engine, and
 Redis: `Order`, `Cancel`, and `Amend` (gateway → `orders` topic), `Trade`
 and `Delta` (engine → `deltas` topic), and `Snapshot` (engine → Redis,
 key `book:{symbol}`). The engine itself reads newline-delimited JSON on
-stdin, one message per line, and writes newline-delimited `Trade` and
-`Delta` events to stdout.
+stdin, one message per line, writes newline-delimited `Trade` and
+`Delta` events to stdout, and writes a full `Snapshot` to Redis after
+every message that changes a book.
 
 Prices are integer ticks — 1 tick = $0.01, so $100.50 is 10050.
 
@@ -166,6 +167,45 @@ docker compose exec redis redis-cli ping
 
 If you have `redis-cli` installed locally, it can talk to the containerized
 Redis directly via the published host port: `redis-cli -p 6379 ping`.
+
+### Running the engine
+
+Dependencies are fetched and built by CMake — nothing to install beyond
+CMake and a C++20 compiler.
+
+```bash
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build
+```
+
+The engine reads orders on stdin and writes events to stdout:
+
+```bash
+./build/engine_main <<'EOF'
+{"type":"new","symbol":"AAPL","order_id":"a1","side":"buy","price":10000,"qty":10,"ingress_ts_ns":1}
+{"type":"new","symbol":"AAPL","order_id":"a2","side":"sell","price":10000,"qty":4,"ingress_ts_ns":2}
+EOF
+```
+
+Setting `REDIS_HOST` additionally writes a book snapshot to
+`book:{symbol}` after every message that changes a book. `REDIS_PORT`
+defaults to 6379. With `REDIS_HOST` unset the engine is stdin-to-stdout
+only, which is how CI tests it without Docker.
+
+```bash
+REDIS_HOST=127.0.0.1 ./build/engine_main < orders.ndjson
+redis-cli -p 6379 GET book:AAPL
+```
+
+Following the two orders above, 4 shares trade and 6 rest on the bid:
+
+```json
+{"symbol":"AAPL","seq":3,"bids":[[10000,6]],"asks":[]}
+```
+
+A dead Redis connection is fatal — the engine reports the error and
+exits non-zero rather than silently serving stale snapshots.
 
 ### Structural overrides
 
