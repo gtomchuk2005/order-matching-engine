@@ -31,15 +31,26 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
-add_library(engine engine/src/OrderBook.cpp engine/src/Engine.cpp engine/src/Json.cpp)
+set(DISABLE_TESTS ON CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    hiredis
+    GIT_REPOSITORY https://github.com/redis/hiredis.git
+    GIT_TAG v1.4.1
+)
+FetchContent_MakeAvailable(hiredis)
+target_compile_options(hiredis PRIVATE -w)
+
+add_library(engine engine/src/OrderBook.cpp engine/src/Engine.cpp engine/src/Json.cpp engine/src/RedisSink.cpp)
 target_include_directories(engine PUBLIC engine/src)
-target_link_libraries(engine PRIVATE nlohmann_json::nlohmann_json)
+target_include_directories(engine SYSTEM PRIVATE ${hiredis_SOURCE_DIR})
+target_link_libraries(engine PRIVATE nlohmann_json::nlohmann_json hiredis)
 
 add_executable(engine_main engine/src/main.cpp)
 target_link_libraries(engine_main PRIVATE engine)
 
-add_executable(engine_tests engine/test/OrderBookTest.cpp engine/test/MatchingTest.cpp engine/test/EngineTest.cpp)
-target_link_libraries(engine_tests PRIVATE engine Catch2::Catch2WithMain)
+add_executable(engine_tests engine/test/OrderBookTest.cpp engine/test/MatchingTest.cpp engine/test/EngineTest.cpp engine/test/SnapshotTest.cpp)
+target_link_libraries(engine_tests PRIVATE engine Catch2::Catch2WithMain nlohmann_json::nlohmann_json)
 
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(CTest)
