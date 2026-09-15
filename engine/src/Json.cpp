@@ -2,6 +2,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "OrderBook.h"
+
 using json = nlohmann::json;
 
 namespace {
@@ -93,6 +95,22 @@ std::string serialize(const OutboundEvent& event) {
         j["price"] = delta.price;
         j["qty"] = delta.qty;
         j["ingress_ts_ns"] = delta.ingress_ts_ns;
+    }
+    return j.dump();
+}
+
+std::string snapshot_json(const Symbol& symbol, std::uint64_t seq, const OrderBook& book) {
+    // ordered_json preserves insertion order; plain json sorts keys alphabetically.
+    nlohmann::ordered_json j;
+    j["symbol"] = symbol;
+    j["seq"] = seq;
+    j["bids"] = json::array();
+    for (const auto& [price, qty] : book.levels(Side::Buy)) {
+        j["bids"].push_back({price, qty});
+    }
+    j["asks"] = json::array();
+    for (const auto& [price, qty] : book.levels(Side::Sell)) {
+        j["asks"].push_back({price, qty});
     }
     return j.dump();
 }
