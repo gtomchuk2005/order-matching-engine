@@ -41,15 +41,34 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(hiredis)
 target_compile_options(hiredis PRIVATE -w)
 
-add_library(engine engine/src/OrderBook.cpp engine/src/Engine.cpp engine/src/Json.cpp engine/src/RedisSink.cpp)
+set(RDKAFKA_BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(RDKAFKA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(RDKAFKA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(WITH_SSL OFF CACHE BOOL "" FORCE)
+set(WITH_SASL OFF CACHE BOOL "" FORCE)
+set(WITH_ZLIB OFF CACHE BOOL "" FORCE)
+set(WITH_ZSTD OFF CACHE BOOL "" FORCE)
+set(WITH_CURL OFF CACHE BOOL "" FORCE)
+set(ENABLE_LZ4_EXT OFF CACHE BOOL "" FORCE)
+set(WITH_PLUGINS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    rdkafka
+    GIT_REPOSITORY https://github.com/confluentinc/librdkafka.git
+    GIT_TAG v2.15.1
+)
+FetchContent_MakeAvailable(rdkafka)
+target_compile_options(rdkafka PRIVATE -w)
+target_compile_options(rdkafka++ PRIVATE -w)
+
+add_library(engine engine/src/OrderBook.cpp engine/src/Engine.cpp engine/src/Json.cpp engine/src/RedisSink.cpp engine/src/Recovery.cpp engine/src/KafkaIo.cpp)
 target_include_directories(engine PUBLIC engine/src)
-target_include_directories(engine SYSTEM PRIVATE ${hiredis_SOURCE_DIR})
-target_link_libraries(engine PRIVATE nlohmann_json::nlohmann_json hiredis)
+target_include_directories(engine SYSTEM PRIVATE ${hiredis_SOURCE_DIR} ${rdkafka_SOURCE_DIR}/src ${rdkafka_SOURCE_DIR}/src-cpp)
+target_link_libraries(engine PRIVATE nlohmann_json::nlohmann_json hiredis rdkafka++)
 
 add_executable(engine_main engine/src/main.cpp)
 target_link_libraries(engine_main PRIVATE engine)
 
-add_executable(engine_tests engine/test/OrderBookTest.cpp engine/test/MatchingTest.cpp engine/test/EngineTest.cpp engine/test/SnapshotTest.cpp)
+add_executable(engine_tests engine/test/OrderBookTest.cpp engine/test/MatchingTest.cpp engine/test/EngineTest.cpp engine/test/SnapshotTest.cpp engine/test/RecoveryTest.cpp)
 target_link_libraries(engine_tests PRIVATE engine Catch2::Catch2WithMain nlohmann_json::nlohmann_json)
 
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)

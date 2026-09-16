@@ -207,6 +207,17 @@ Following the two orders above, 4 shares trade and 6 rest on the bid:
 A dead Redis connection is fatal — the engine reports the error and
 exits non-zero rather than silently serving stale snapshots.
 
+Setting `KAFKA_BROKERS` runs the engine against Kafka instead of
+stdin: it consumes `ORDERS_TOPIC` (default `orders`) as a member of
+`KAFKA_GROUP_ID` (default `matching-engine`) and produces trades and
+deltas, keyed by symbol, to `DELTAS_TOPIC` (default `deltas`).
+Offsets are committed only after the produce is acked. On startup it
+replays its partitions from the beginning to rebuild the books, so
+`orders` is created with `retention.ms=-1`.
+
+`scripts/replay-check.sh` exercises Kafka mode and restart recovery
+against the compose stack.
+
 ### Structural overrides
 
 `.env` is yours to edit directly for config values. For structural

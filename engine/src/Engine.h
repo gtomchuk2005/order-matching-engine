@@ -13,6 +13,7 @@ public:
     std::vector<OutboundEvent> apply(const InboundMessage& msg);
 
     const OrderBook* book_for(const Symbol& symbol) const;
+    std::uint64_t    seq_for(const Symbol& symbol) const;
 
 private:
     std::unordered_map<Symbol, OrderBook> books_;
