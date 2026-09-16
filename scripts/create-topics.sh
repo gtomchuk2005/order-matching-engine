@@ -10,6 +10,7 @@ set -euo pipefail
 : "${TOPIC_REPLICATION:?TOPIC_REPLICATION must be set}"
 
 KAFKA_TOPICS_BIN="${KAFKA_TOPICS_BIN:-/opt/kafka/bin/kafka-topics.sh}"
+KAFKA_CONFIGS_BIN="${KAFKA_CONFIGS_BIN:-/opt/kafka/bin/kafka-configs.sh}"
 
 # Healthcheck passing doesn't guarantee the listener is reachable from
 # this container yet, so retry rather than fail on first attempt.
@@ -44,6 +45,14 @@ create_topic() {
 
 create_topic "${ORDERS_TOPIC}"
 create_topic "${DELTAS_TOPIC}"
+
+# --create --config is skipped when the topic already exists, so retention
+# must be set separately via --alter to stay idempotent across restarts.
+echo "Setting retention.ms=-1 on '${ORDERS_TOPIC}'..."
+"${KAFKA_CONFIGS_BIN}" --alter \
+  --bootstrap-server "${KAFKA_BROKER}" \
+  --entity-type topics --entity-name "${ORDERS_TOPIC}" \
+  --add-config retention.ms=-1
 
 echo "Topics ready:"
 "${KAFKA_TOPICS_BIN}" --bootstrap-server "${KAFKA_BROKER}" --list
