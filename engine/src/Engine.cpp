@@ -30,6 +30,11 @@ const OrderBook* Engine::book_for(const Symbol& symbol) const {
     return found == books_.end() ? nullptr : &found->second;
 }
 
+std::uint64_t Engine::seq_for(const Symbol& symbol) const {
+    auto found = seq_.find(symbol);
+    return found == seq_.end() ? 0 : found->second;
+}
+
 std::vector<OutboundEvent> Engine::apply(const InboundMessage& msg) {
     std::vector<OutboundEvent> events;
 
