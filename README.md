@@ -218,6 +218,14 @@ replays its partitions from the beginning to rebuild the books, so
 `scripts/replay-check.sh` exercises Kafka mode and restart recovery
 against the compose stack.
 
+`docker compose up -d` also builds and runs the engine itself as the
+`engine` service, reaching Kafka and Redis over the compose network;
+it waits for both to be healthy and for topics to exist before
+starting. Running the binary directly still works, either on stdin
+or in host Kafka mode against `localhost:19092`. `replay-check.sh`
+takes `ENGINE_MODE=host` (default) or `ENGINE_MODE=container` to
+drive the local binary or the compose service.
+
 ### Structural overrides
 
 `.env` is yours to edit directly for config values. For structural
