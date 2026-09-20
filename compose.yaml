@@ -78,5 +78,28 @@ services:
       TOPIC_REPLICATION: ${TOPIC_REPLICATION}
     entrypoint: ["/bin/bash", "/create-topics.sh"]
 
+  engine:
+    build:
+      context: .
+      dockerfile: engine/Dockerfile
+    container_name: matching-engine-engine
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      init-topics:
+        condition: service_completed_successfully
+    environment:
+      # Defaults keep the engine working if a .env predates these vars;
+      # an empty KAFKA_BROKERS makes it read stdin, hit EOF, and exit 0 silently.
+      KAFKA_BROKERS: ${ENGINE_KAFKA_BROKERS:-kafka:9092}
+      ORDERS_TOPIC: ${ORDERS_TOPIC}
+      DELTAS_TOPIC: ${DELTAS_TOPIC}
+      KAFKA_GROUP_ID: ${ENGINE_KAFKA_GROUP_ID:-matching-engine}
+      REDIS_HOST: ${ENGINE_REDIS_HOST:-redis}
+      REDIS_PORT: ${ENGINE_REDIS_PORT:-6379}
+    restart: on-failure
+
 volumes:
   kafka-data:

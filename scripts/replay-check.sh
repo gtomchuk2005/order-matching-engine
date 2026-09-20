@@ -4,16 +4,40 @@
 
 set -euo pipefail
 
+log() {
+    echo "[replay-check] $*"
+}
+
+fail() {
+    echo "FAIL: $*" >&2
+    exit 1
+}
+
 KAFKA_BOOTSTRAP="${KAFKA_BOOTSTRAP:-localhost:19092}"
 REDIS_HOST="${REDIS_HOST:-127.0.0.1}"
 REDIS_PORT="${REDIS_PORT:-6379}"
 ORDERS_TOPIC="${ORDERS_TOPIC:-orders}"
 DELTAS_TOPIC="${DELTAS_TOPIC:-deltas}"
 RUN_ID="$$-$(date +%s)"
-GROUP_ID="${GROUP_ID:-replay-check-${RUN_ID}}"
 ENGINE_BIN="${ENGINE_BIN:-./build/engine_main}"
 KAFKA_CONTAINER="${KAFKA_CONTAINER:-matching-engine-kafka}"
 REDIS_CONTAINER="${REDIS_CONTAINER:-matching-engine-redis}"
+ENGINE_CONTAINER="${ENGINE_CONTAINER:-matching-engine-engine}"
+ENGINE_MODE="${ENGINE_MODE:-host}"
+ENGINE_SERVICE="${ENGINE_SERVICE:-engine}"
+ENGINE_STOP_TIMEOUT_SECONDS=60
+
+# Container mode uses the group id compose assigns the engine, not a
+# unique-per-run one, since the script does not control the container's env.
+if [[ "${ENGINE_MODE}" == "host" ]]; then
+    GROUP_ID="${GROUP_ID:-replay-check-${RUN_ID}}"
+elif [[ "${ENGINE_MODE}" == "container" ]]; then
+    command -v jq >/dev/null 2>&1 || fail "jq is required for ENGINE_MODE=container"
+    GROUP_ID="$(docker compose config --format json | jq -r ".services.${ENGINE_SERVICE}.environment.KAFKA_GROUP_ID")"
+    [[ -n "${GROUP_ID}" && "${GROUP_ID}" != "null" ]] || fail "could not determine KAFKA_GROUP_ID for compose service ${ENGINE_SERVICE}"
+else
+    fail "unknown ENGINE_MODE '${ENGINE_MODE}' (expected 'host' or 'container')"
+fi
 
 SYM_A="RPA${RUN_ID}"
 SYM_B="RPB${RUN_ID}"
@@ -30,14 +54,10 @@ SNAP_B_AFTER="${TMP_DIR}/snap_b_after"
 DELTAS_OUT="${TMP_DIR}/deltas.ndjson"
 
 ENGINE_PID=""
+ENGINE_SERVICE_WAS_RUNNING=""
 
-log() {
-    echo "[replay-check] $*"
-}
-
-fail() {
-    echo "FAIL: $*" >&2
-    exit 1
+engine_service_running() {
+    [[ "$(docker compose ps --status running --services)" == *"${ENGINE_SERVICE}"* ]]
 }
 
 cleanup() {
@@ -45,12 +65,27 @@ cleanup() {
         kill -TERM "${ENGINE_PID}" 2>/dev/null || true
         wait "${ENGINE_PID}" 2>/dev/null || true
     fi
+    if [[ "${ENGINE_SERVICE_WAS_RUNNING}" == "1" ]] && ! engine_service_running; then
+        docker compose start "${ENGINE_SERVICE}" >/dev/null 2>&1 || true
+    fi
     docker exec "${REDIS_CONTAINER}" redis-cli DEL "book:${SYM_A}" "book:${SYM_B}" >/dev/null 2>&1 || true
     rm -rf "${TMP_DIR}"
 }
 trap cleanup EXIT
 
-start_engine() {
+# A running compose engine service consumes the shared orders topic
+# regardless of mode, so it must be quiesced even for host-mode runs.
+if engine_service_running; then
+    ENGINE_SERVICE_WAS_RUNNING="1"
+    if [[ "${ENGINE_MODE}" == "host" ]]; then
+        log "stopping compose engine service so it does not double-consume orders"
+        docker compose stop "${ENGINE_SERVICE}" >/dev/null
+    fi
+else
+    ENGINE_SERVICE_WAS_RUNNING="0"
+fi
+
+engine_start_host() {
     KAFKA_BROKERS="${KAFKA_BOOTSTRAP}" \
     ORDERS_TOPIC="${ORDERS_TOPIC}" \
     DELTAS_TOPIC="${DELTAS_TOPIC}" \
@@ -61,12 +96,71 @@ start_engine() {
     ENGINE_PID=$!
 }
 
-stop_engine() {
+engine_stop_host() {
     kill -TERM "${ENGINE_PID}"
     if ! wait "${ENGINE_PID}"; then
-        fail "engine exited non-zero on SIGTERM, see ${ENGINE_LOG}"
+        fail "engine exited non-zero on SIGTERM. Log:
+$(engine_log_capture)"
     fi
     ENGINE_PID=""
+}
+
+engine_start_container() {
+    docker compose start "${ENGINE_SERVICE}" >/dev/null
+}
+
+engine_stop_container() {
+    docker compose stop "${ENGINE_SERVICE}" >/dev/null
+    local waited=0
+    while engine_service_running; do
+        if (( waited >= ENGINE_STOP_TIMEOUT_SECONDS )); then
+            fail "timed out after ${ENGINE_STOP_TIMEOUT_SECONDS}s waiting for ${ENGINE_SERVICE} to stop"
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    local exit_code
+    exit_code="$(docker inspect -f '{{.State.ExitCode}}' "${ENGINE_CONTAINER}")"
+    if [[ "${exit_code}" != "0" ]]; then
+        fail "${ENGINE_SERVICE} exited non-zero (${exit_code}) on SIGTERM. Log:
+$(engine_log_capture)"
+    fi
+    # Rejoining the same fixed group before the broker finishes processing
+    # the LeaveGroup can hand out a stale assignment; wait for it to settle.
+    local group_waited=0
+    while [[ "$(docker exec "${KAFKA_CONTAINER}" "${KAFKA_BIN}/kafka-consumer-groups.sh" \
+        --bootstrap-server localhost:9092 --describe --group "${GROUP_ID}" --state 2>/dev/null \
+        | awk -v g="${GROUP_ID}" '$1==g {print $(NF-1)}')" != "Empty" ]]; do
+        if (( group_waited >= ENGINE_STOP_TIMEOUT_SECONDS )); then
+            fail "timed out after ${ENGINE_STOP_TIMEOUT_SECONDS}s waiting for group ${GROUP_ID} to go Empty"
+        fi
+        sleep 1
+        group_waited=$((group_waited + 1))
+    done
+}
+
+engine_start() {
+    if [[ "${ENGINE_MODE}" == "host" ]]; then
+        engine_start_host
+    else
+        engine_start_container
+    fi
+}
+
+engine_stop() {
+    if [[ "${ENGINE_MODE}" == "host" ]]; then
+        engine_stop_host
+    else
+        engine_stop_container
+    fi
+}
+
+engine_log_capture() {
+    if [[ "${ENGINE_MODE}" == "host" ]]; then
+        cat "${ENGINE_LOG}"
+    else
+        docker compose logs "${ENGINE_SERVICE}"
+    fi
 }
 
 produce_orders() {
@@ -120,7 +214,14 @@ save_snapshot() {
     docker exec "${REDIS_CONTAINER}" redis-cli GET "book:${symbol}" >"${out}"
 }
 
-[[ -x "${ENGINE_BIN}" ]] || fail "engine binary not found or not executable at ${ENGINE_BIN}"
+if [[ "${ENGINE_MODE}" == "host" ]]; then
+    [[ -x "${ENGINE_BIN}" ]] || fail "engine binary not found or not executable at ${ENGINE_BIN}"
+    ENGINE_DESC="${ENGINE_BIN}"
+else
+    docker compose config --services | grep -qx "${ENGINE_SERVICE}" \
+        || fail "compose service ${ENGINE_SERVICE} does not exist"
+    ENGINE_DESC="compose service ${ENGINE_SERVICE}"
+fi
 
 docker inspect -f '{{.State.Running}}' "${KAFKA_CONTAINER}" 2>/dev/null | grep -q true \
     || fail "container ${KAFKA_CONTAINER} is not running"
@@ -131,7 +232,7 @@ TOPICS="$(docker exec "${KAFKA_CONTAINER}" "${KAFKA_BIN}/kafka-topics.sh" --boot
 grep -qx "${ORDERS_TOPIC}" <<<"${TOPICS}" || fail "topic ${ORDERS_TOPIC} does not exist"
 grep -qx "${DELTAS_TOPIC}" <<<"${TOPICS}" || fail "topic ${DELTAS_TOPIC} does not exist"
 
-log "preconditions ok (engine=${ENGINE_BIN}, group=${GROUP_ID}, symbols=${SYM_A},${SYM_B})"
+log "preconditions ok (mode=${ENGINE_MODE}, engine=${ENGINE_DESC}, group=${GROUP_ID}, symbols=${SYM_A},${SYM_B})"
 
 # Resting orders on both sides for each symbol, plus a partial cross, leaving
 # resting orders that a later post-restart order can cross.
@@ -151,21 +252,25 @@ log "producing first batch of orders for ${SYM_A} and ${SYM_B}"
 produce_orders "${ORDERS_BATCH_1}"
 
 log "starting engine (first run)"
-start_engine
+engine_start
 wait_for_lag_zero
+# Lag 0 confirms the orders offset committed, but the redis write happens
+# just before that commit - wait for it explicitly to avoid reading early.
+wait_for_redis_key "book:${SYM_A}"
+wait_for_redis_key "book:${SYM_B}"
 
 save_snapshot "${SYM_A}" "${SNAP_A_BEFORE}"
 save_snapshot "${SYM_B}" "${SNAP_B_BEFORE}"
 log "saved pre-restart snapshots"
 
 log "stopping engine (first run)"
-stop_engine
+engine_stop
 
 log "deleting redis snapshot keys so a no-op restart cannot pass"
 docker exec "${REDIS_CONTAINER}" redis-cli DEL "book:${SYM_A}" "book:${SYM_B}" >/dev/null
 
 log "starting engine (second run, should replay and rebuild)"
-start_engine
+engine_start
 wait_for_redis_key "book:${SYM_A}"
 wait_for_redis_key "book:${SYM_B}"
 
@@ -220,6 +325,6 @@ fi
 log "found expected trade event for ${SYM_A}, and confirmed replay did not duplicate the earlier trade"
 
 log "stopping engine (second run)"
-stop_engine
+engine_stop
 
-echo "PASS: kafka mode replay-check succeeded for symbols ${SYM_A}, ${SYM_B}"
+echo "PASS: kafka mode replay-check succeeded (engine_mode=${ENGINE_MODE}) for symbols ${SYM_A}, ${SYM_B}"
