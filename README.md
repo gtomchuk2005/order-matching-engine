@@ -137,9 +137,9 @@ docker compose up -d
 
 `.env` holds local configuration and is gitignored — edit it freely.
 
-This starts Kafka and Redis, then runs a
-one-shot `init-topics` job that creates the `orders` and `deltas`
-topics (idempotent — safe to rerun).
+This starts Kafka and Redis, runs a one-shot `init-topics` job that
+creates the `orders` and `deltas` topics (idempotent — safe to rerun),
+then starts the engine and the gateway.
 
 ### Verify it's up
 
@@ -147,13 +147,15 @@ topics (idempotent — safe to rerun).
 docker compose ps
 ```
 
-Expected — all three services healthy or exited cleanly:
+Expected — every service healthy, running, or exited cleanly:
 
 ```
 NAME                            STATUS
 matching-engine-kafka           Up (healthy)
 matching-engine-redis           Up (healthy)
 matching-engine-init-topics     Exited (0)
+matching-engine-engine          Up
+matching-engine-gateway         Up
 ```
 
 ```bash
@@ -225,6 +227,28 @@ starting. Running the binary directly still works, either on stdin
 or in host Kafka mode against `localhost:19092`. `replay-check.sh`
 takes `ENGINE_MODE=host` (default) or `ENGINE_MODE=container` to
 drive the local binary or the compose service.
+
+### Order intake
+
+The Go gateway exposes HTTP endpoints for submitting orders, cancelling
+them, and reading a symbol's book snapshot. It assigns each order a
+unique `order_id`, deduplicates by `client_order_id` for 24h, and
+produces to `ORDERS_TOPIC` keyed by symbol before responding.
+
+```bash
+# Submit an order
+curl -X POST localhost:8080/orders -d '{"symbol":"AAPL","side":"buy","price":10050,"qty":10,"client_order_id":"c1"}'
+
+# Cancel an order
+curl -X DELETE localhost:8080/orders/<order_id>
+
+# Read the current book snapshot for a symbol
+curl localhost:8080/book/AAPL
+```
+
+A repeated `client_order_id` returns `409` with the original `order_id`
+rather than creating a duplicate order. `GET /book/{symbol}` returns
+`404` until the engine has processed at least one order for that symbol.
 
 ### Structural overrides
 
