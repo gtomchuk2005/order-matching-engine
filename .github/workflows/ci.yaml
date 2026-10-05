@@ -37,3 +37,24 @@ jobs:
         run: cmake --build build
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+  gateway:
+    name: Build and test gateway
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: Build
+        run: go build ./...
+        working-directory: gateway
+      - name: Vet
+        run: go vet ./...
+        working-directory: gateway
+      - name: Test
+        run: go test ./...
+        working-directory: gateway
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+        working-directory: gateway
