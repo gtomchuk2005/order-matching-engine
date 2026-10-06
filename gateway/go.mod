@@ -3,6 +3,7 @@ module github.com/gtomchuk2005/order-matching-engine/gateway
 go 1.26.0
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/twmb/franz-go v1.22.0
 )

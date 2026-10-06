@@ -250,6 +250,33 @@ A repeated `client_order_id` returns `409` with the original `order_id`
 rather than creating a duplicate order. `GET /book/{symbol}` returns
 `404` until the engine has processed at least one order for that symbol.
 
+### Live stream
+
+`GET /stream?symbol=AAPL` upgrades to a WebSocket and pushes book
+updates for that symbol as they happen. The first frame is always a
+snapshot of the current book (omitted if the engine hasn't touched the
+symbol yet); every frame after that is a delta or trade straight off
+`DELTAS_TOPIC`, forwarded byte-for-byte.
+
+```json
+{"type":"snapshot","symbol":"AAPL","seq":41,"bids":[[10050,10]],"asks":[]}
+```
+
+```json
+{"ingress_ts_ns":123,"price":10050,"qty":6,"seq":42,"side":"bid","symbol":"AAPL","type":"delta"}
+```
+
+```json
+{"ingress_ts_ns":123,"maker_id":"a1","price":10050,"qty":4,"seq":43,"symbol":"AAPL","taker_id":"b2","type":"trade"}
+```
+
+Deltas use `"bid"`/`"ask"` for side; trades have no `side` field at
+all, just `maker_id`/`taker_id`. `seq` is monotonic per symbol with no
+gaps, so a client applies the snapshot, then each later frame only if
+its `seq` is exactly `last + 1` — anything else means a frame was
+missed and the client should reconnect to get a fresh snapshot. An
+invalid symbol returns `422` and the connection is never upgraded.
+
 ### Structural overrides
 
 `.env` is yours to edit directly for config values. For structural

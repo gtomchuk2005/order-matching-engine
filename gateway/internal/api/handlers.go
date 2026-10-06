@@ -29,11 +29,12 @@ type Store interface {
 type Handler struct {
 	Producer Producer
 	Store    Store
+	Broker   Broker
 	IdemTTL  time.Duration
 }
 
-func New(producer Producer, store Store, idemTTL time.Duration) *Handler {
-	return &Handler{Producer: producer, Store: store, IdemTTL: idemTTL}
+func New(producer Producer, store Store, broker Broker, idemTTL time.Duration) *Handler {
+	return &Handler{Producer: producer, Store: store, Broker: broker, IdemTTL: idemTTL}
 }
 
 func (h *Handler) Routes() *http.ServeMux {
@@ -41,6 +42,7 @@ func (h *Handler) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /orders", h.handlePostOrder)
 	mux.HandleFunc("DELETE /orders/{id}", h.handleDeleteOrder)
 	mux.HandleFunc("GET /book/{symbol}", h.handleGetBook)
+	mux.HandleFunc("GET /stream", h.handleStream)
 	return mux
 }
 
