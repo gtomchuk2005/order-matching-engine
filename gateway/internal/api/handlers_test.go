@@ -83,7 +83,7 @@ func (p *fakeProducer) Produce(ctx context.Context, key string, value []byte) er
 func newTestHandler() (*Handler, *fakeStore, *fakeProducer) {
 	s := newFakeStore()
 	p := &fakeProducer{}
-	h := New(p, s, 24*time.Hour)
+	h := New(p, s, nil, 24*time.Hour)
 	return h, s, p
 }
 
