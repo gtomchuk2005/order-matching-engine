@@ -5,26 +5,6 @@ logged to Kafka, matched by a C++ engine holding the order book in memory,
 and pushed back out to WebSocket subscribers as book updates and trades.
 Redis holds book snapshots for fast reads and idempotency keys at the edge.
 
-## What is a matching engine?
-
-The **order book** holds resting limit orders on two sides — **bids**
-(buys) and **asks** (sells) — each side sorted by price.
-
-```
-  ASKS (sell)   101.20
-                101.10   ← lowest ask = "best ask"
-               ─────────  spread
-                100.90   ← highest bid = "best bid"
-  BIDS (buy)    100.80
-```
-
-The **best bid** is the highest buy, the **best ask** the lowest sell —
-the most competitive orders on each side, sitting adjacent to the spread
-(most competitive meaning first in line to trade, not most profitable for
-whoever placed it). An incoming order matches when it crosses the opposite side's best price,
-consuming resting quantity; any unmatched remainder rests in the book.
-Orders at the same price fill in arrival order (**price-time priority**).
-
 ## Architecture
 
 ```
@@ -51,245 +31,105 @@ Orders at the same price fill in arrival order (**price-time priority**).
                      └──────────────────────────────┘
 ```
 
-## Message formats
-
-JSON message types flow between the Go gateway, the C++ engine, and
-Redis: `Order`, `Cancel`, and `Amend` (gateway → `orders` topic), `Trade`
-and `Delta` (engine → `deltas` topic), and `Snapshot` (engine → Redis,
-key `book:{symbol}`). The engine itself reads newline-delimited JSON on
-stdin, one message per line, writes newline-delimited `Trade` and
-`Delta` events to stdout, and writes a full `Snapshot` to Redis after
-every message that changes a book.
-
-Prices are integer ticks — 1 tick = $0.01, so $100.50 is 10050.
-
-```json
-// Order
-{"type": "new", "symbol": "AAPL", "order_id": "a1", "side": "buy",
- "price": 10050, "qty": 10, "ingress_ts_ns": 1755273600123456789}
-```
-
-```json
-// Cancel
-{"type": "cancel", "symbol": "AAPL", "order_id": "a1",
- "ingress_ts_ns": 1755273600123456789}
-```
-
-```json
-// Amend
-{"type": "amend", "symbol": "AAPL", "order_id": "a1", "price": 10100,
- "qty": 5, "ingress_ts_ns": 1755273600123456789}
-```
-
-```json
-// Trade
-{"type": "trade", "symbol": "AAPL", "seq": 1, "maker_id": "a1",
- "taker_id": "b7", "price": 10050, "qty": 4,
- "ingress_ts_ns": 1755273600123456789}
-```
-
-```json
-// Delta
-{"type": "delta", "symbol": "AAPL", "seq": 2, "side": "bid",
- "price": 10050, "qty": 6, "ingress_ts_ns": 1755273600123456789}
-```
-
-```json
-// Snapshot (Redis key: book:AAPL)
-{"symbol": "AAPL", "seq": 42,
- "bids": [[10050, 6], [10049, 25]],
- "asks": [[10052, 8], [10053, 40]]}
-```
-
-A `qty: 0` on a `Delta` means the level is now empty. `seq` is per-symbol
-and monotonic across every `Trade` and `Delta` emitted for that symbol.
-The engine copies `ingress_ts_ns` from the message that caused the event
-— it never generates a timestamp of its own.
-
-## Getting started
-
-### Prerequisites
-
-**Required**
-
-| Tool | Minimum version | Needed for | Install |
-|---|---|---|---|
-| Docker | Desktop or Colima, any recent version | Running the entire system | https://docs.docker.com/get-started/get-docker/ |
-
-**Optional** — for building or testing outside Docker
-
-| Tool | Minimum version | Needed for | Install |
-|---|---|---|---|
-| Go | 1.26+ | Building and testing the gateway outside Docker | https://go.dev/doc/install |
-| CMake | 3.20+ | Building and testing the engine outside Docker | https://cmake.org/download/ |
-
-Every component — Kafka, Redis, the engine, and the gateway — runs in a
-container, so Docker alone runs the whole system.
-
-### Quick start
+## Running it
 
 ```bash
 git clone <this-repo>
 cd order-matching-engine
 cp .env.example .env
 docker compose up -d
-```
-
-`.env` holds local configuration and is gitignored — edit it freely.
-
-This starts Kafka and Redis, runs a one-shot `init-topics` job that
-creates the `orders` and `deltas` topics (idempotent — safe to rerun),
-then starts the engine and the gateway.
-
-### Verify it's up
-
-```bash
 docker compose ps
 ```
 
-Expected — every service healthy, running, or exited cleanly:
+Expect five services: `kafka`, `redis`, `init-topics` (exited 0), `engine`,
+and `gateway`. `docker compose logs engine` should show `partition N live
+at offset X` for three partitions once caught up.
 
-```
-NAME                            STATUS
-matching-engine-kafka           Up (healthy)
-matching-engine-redis           Up (healthy)
-matching-engine-init-topics     Exited (0)
-matching-engine-engine          Up
-matching-engine-gateway         Up
-```
+`docker compose stop` stops everything and keeps all data. `docker compose
+down -v` wipes the Kafka volume and Redis irreversibly; clearing Redis
+alone does nothing lasting, since the engine replays the log on startup
+and rewrites every snapshot.
 
+## Using it
+
+Submit a resting buy:
 ```bash
-# List topics — expect "orders" and "deltas"
-docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server localhost:9092 --list
+curl -X POST localhost:8080/orders \
+  -d '{"symbol":"DEMO","side":"buy","price":10020,"qty":8,"client_order_id":"d3"}'
+```
+```json
+{"client_order_id":"d3","order_id":"2c87366370b8416084e3cab5d3092ce3","status":"accepted","symbol":"DEMO"}
+```
+`order_id` is server-assigned and is what a cancel references.
 
-# Redis responds — expect "PONG"
-docker compose exec redis redis-cli ping
+Read the book after several orders have built it up:
+```bash
+curl localhost:8080/book/DEMO
+```
+```json
+{"symbol":"DEMO","seq":5,"bids":[[10020,8],[10010,5],[10000,10]],"asks":[[10100,7],[10150,3]]}
+```
+Bids descend, asks ascend, each level is `[price, qty]` aggregated across every order resting there.
+
+Cancel the resting buy:
+```bash
+curl -X DELETE localhost:8080/orders/2c87366370b8416084e3cab5d3092ce3
+```
+```json
+{"order_id":"2c87366370b8416084e3cab5d3092ce3","status":"cancel_accepted","symbol":"DEMO"}
+```
+The 10020 level is gone from the book entirely (the 202 only confirms the cancel is in the log, not that the order was still resting when processed):
+```json
+{"symbol":"DEMO","seq":6,"bids":[[10010,5],[10000,10]],"asks":[[10100,7],[10150,3]]}
 ```
 
-If you have `redis-cli` installed locally, it can talk to the containerized
-Redis directly via the published host port: `redis-cli -p 6379 ping`.
+With asks resting at 10100 x7 and 10150 x3, a buy of 10 sweeps both levels:
+```bash
+curl -X POST localhost:8080/orders \
+  -d '{"symbol":"DEMO","side":"buy","price":10150,"qty":10,"client_order_id":"sweep1"}'
+```
+Two trades, at two different prices, same taker — each fill executes at the resting (maker) order's price, not the incoming order's:
+```json
+{"type":"trade","symbol":"DEMO","seq":7,"maker_id":"2bcf0f5d…","taker_id":"a648c396…","price":10100,"qty":7,"ingress_ts_ns":1791393680546321753}
+{"type":"trade","symbol":"DEMO","seq":8,"maker_id":"9cd014ec…","taker_id":"a648c396…","price":10150,"qty":3,"ingress_ts_ns":1791393680546321753}
+```
 
-### Running the engine
+`curl` can't speak WebSocket; watching the live stream needs a client such as `websocat`:
+```bash
+websocat "ws://localhost:8080/stream?symbol=DEMO"
+```
+The first frame is always a snapshot, then every trade and delta as it happens:
+```json
+{"type":"snapshot","symbol":"DEMO","seq":1,"bids":[[10050,10]],"asks":[]}
+{"type":"trade","symbol":"DEMO","seq":2,"maker_id":"9b4aa981…","taker_id":"8f2a750e…","price":10050,"qty":4,"ingress_ts_ns":1791270512700293583}
+{"type":"delta","symbol":"DEMO","seq":3,"side":"bid","price":10050,"qty":6,"ingress_ts_ns":1791270512700293583}
+```
+A client applies the snapshot, then each later frame only if its `seq` is exactly `last + 1` — anything else means reconnect for a fresh snapshot.
 
-Dependencies are fetched and built by CMake — nothing to install beyond
-CMake and a C++20 compiler.
+## Design decisions
+
+- **Partition by symbol** — one engine instance owns a partition's symbols outright, so the matching hot path needs no locks and replay deterministically rebuilds its books.
+- **The engine is a pure function of its input log** — no wall clock, no generated ids, no external calls in the matching path; it copies `ingress_ts_ns` from the triggering message, and the Redis snapshot write lives in `main.cpp` outside `Engine::apply`. This is what makes replay deterministic.
+- **Prices are integer ticks, never floats** — 1 tick = $0.01 ($100.50 is `10050`), since float equality is unreliable and prices must compare exactly.
+- **Deltas are absolute, not incremental** — `qty: 6` means the level is now 6 (`qty: 0` means empty), which makes them idempotent under at-least-once delivery. `seq` is per-symbol and monotonic across every trade and delta.
+- **`std::list` per price level, not `std::deque`** — cancel holds an iterator into the list to unlink in O(1); a deque would invalidate it, at the cost of worse cache locality when matching walks a level.
+
+Deliberately out of scope: authentication, market/stop/IOC order types, conflation, exactly-once delivery, and more than one engine instance per partition.
+
+## Development
 
 ```bash
 cmake -S . -B build
 cmake --build build
-ctest --test-dir build
+ctest --test-dir build        # 58 tests
 ```
-
-The engine reads orders on stdin and writes events to stdout:
 
 ```bash
-./build/engine_main <<'EOF'
-{"type":"new","symbol":"AAPL","order_id":"a1","side":"buy","price":10000,"qty":10,"ingress_ts_ns":1}
-{"type":"new","symbol":"AAPL","order_id":"a2","side":"sell","price":10000,"qty":4,"ingress_ts_ns":2}
-EOF
+cd gateway && go test ./...
 ```
 
-Setting `REDIS_HOST` additionally writes a book snapshot to
-`book:{symbol}` after every message that changes a book. `REDIS_PORT`
-defaults to 6379. With `REDIS_HOST` unset the engine is stdin-to-stdout
-only, which is how CI tests it without Docker.
-
-```bash
-REDIS_HOST=127.0.0.1 ./build/engine_main < orders.ndjson
-redis-cli -p 6379 GET book:AAPL
-```
-
-Following the two orders above, 4 shares trade and 6 rest on the bid:
-
-```json
-{"symbol":"AAPL","seq":3,"bids":[[10000,6]],"asks":[]}
-```
-
-A dead Redis connection is fatal — the engine reports the error and
-exits non-zero rather than silently serving stale snapshots.
-
-Setting `KAFKA_BROKERS` runs the engine against Kafka instead of
-stdin: it consumes `ORDERS_TOPIC` (default `orders`) as a member of
-`KAFKA_GROUP_ID` (default `matching-engine`) and produces trades and
-deltas, keyed by symbol, to `DELTAS_TOPIC` (default `deltas`).
-Offsets are committed only after the produce is acked. On startup it
-replays its partitions from the beginning to rebuild the books, so
-`orders` is created with `retention.ms=-1`.
-
-`scripts/replay-check.sh` exercises Kafka mode and restart recovery
-against the compose stack.
-
-`docker compose up -d` also builds and runs the engine itself as the
-`engine` service, reaching Kafka and Redis over the compose network;
-it waits for both to be healthy and for topics to exist before
-starting. Running the binary directly still works, either on stdin
-or in host Kafka mode against `localhost:19092`. `replay-check.sh`
-takes `ENGINE_MODE=host` (default) or `ENGINE_MODE=container` to
-drive the local binary or the compose service.
-
-### Order intake
-
-The Go gateway exposes HTTP endpoints for submitting orders, cancelling
-them, and reading a symbol's book snapshot. It assigns each order a
-unique `order_id`, deduplicates by `client_order_id` for 24h, and
-produces to `ORDERS_TOPIC` keyed by symbol before responding.
-
-```bash
-# Submit an order
-curl -X POST localhost:8080/orders -d '{"symbol":"AAPL","side":"buy","price":10050,"qty":10,"client_order_id":"c1"}'
-
-# Cancel an order
-curl -X DELETE localhost:8080/orders/<order_id>
-
-# Read the current book snapshot for a symbol
-curl localhost:8080/book/AAPL
-```
-
-A repeated `client_order_id` returns `409` with the original `order_id`
-rather than creating a duplicate order. `GET /book/{symbol}` returns
-`404` until the engine has processed at least one order for that symbol.
-
-### Live stream
-
-`GET /stream?symbol=AAPL` upgrades to a WebSocket and pushes book
-updates for that symbol as they happen. The first frame is always a
-snapshot of the current book (omitted if the engine hasn't touched the
-symbol yet); every frame after that is a delta or trade straight off
-`DELTAS_TOPIC`, forwarded byte-for-byte.
-
-```json
-{"type":"snapshot","symbol":"AAPL","seq":41,"bids":[[10050,10]],"asks":[]}
-```
-
-```json
-{"ingress_ts_ns":123,"price":10050,"qty":6,"seq":42,"side":"bid","symbol":"AAPL","type":"delta"}
-```
-
-```json
-{"ingress_ts_ns":123,"maker_id":"a1","price":10050,"qty":4,"seq":43,"symbol":"AAPL","taker_id":"b2","type":"trade"}
-```
-
-Deltas use `"bid"`/`"ask"` for side; trades have no `side` field at
-all, just `maker_id`/`taker_id`. `seq` is monotonic per symbol with no
-gaps, so a client applies the snapshot, then each later frame only if
-its `seq` is exactly `last + 1` — anything else means a frame was
-missed and the client should reconnect to get a fresh snapshot. An
-invalid symbol returns `422` and the connection is never upgraded.
-
-### Structural overrides
-
-`.env` is yours to edit directly for config values. For structural
-changes to `compose.yaml` itself, use `compose.override.yaml` — Compose
-auto-loads it when present, and it's gitignored.
-
-## Benchmarks
-
-Order book benchmarks are opt-in via `-DBUILD_BENCH=ON` and are not built
-by default:
-
-```bash
-cmake -S . -B build -DBUILD_BENCH=ON
-cmake --build build --target order_book_bench
-./build/order_book_bench
-```
+The engine also runs standalone on newline-delimited JSON over stdin (how
+CI tests it without Docker); `KAFKA_BROKERS` switches it to Kafka mode and
+`REDIS_HOST` enables snapshot writes. `scripts/replay-check.sh` exercises
+Kafka mode and restart recovery. Benchmarks are opt-in behind
+`-DBUILD_BENCH=ON`.
