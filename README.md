@@ -1,5 +1,7 @@
 # Order Matching Engine
 
+[![CI](https://github.com/gtomchuk2005/order-matching-engine/actions/workflows/ci.yaml/badge.svg)](https://github.com/gtomchuk2005/order-matching-engine/actions/workflows/ci.yaml)
+
 A limit order matching engine, run end-to-end: orders arrive over HTTP, get
 logged to Kafka, matched by a C++ engine holding the order book in memory,
 and pushed back out to WebSocket subscribers as book updates and trades.
